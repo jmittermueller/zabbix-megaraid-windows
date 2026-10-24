@@ -1,0 +1,657 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: e960332b3f6c46a1956486d4f3f99fce
+      name: 'Templates/Server hardware'
+  templates:
+    - uuid: 8f5fd5102c044d02afbe0871e8989a4a
+      template: 'MegaRAID controllers by Zabbix agent'
+      name: 'MegaRAID controllers by Zabbix agent'
+      description: 'MegaRAID monitoring for Windows using an active StorCLI JSON master item and dependent discovery.'
+      vendor:
+        name: Soft-Management
+        version: 7.0-45
+      groups:
+        - name: 'Templates/Server hardware'
+      items:
+        - uuid: 6eec11d9ec074b3db72545189a7fecc2
+          name: 'MegaRAID: StorCLI raw JSON'
+          type: ZABBIX_ACTIVE
+          key: megaraid.get
+          delay: 5m
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          timeout: 30s
+          tags:
+            - tag: component
+              value: raw
+          triggers:
+            - uuid: 92923dfd815b47bd826e2d1d91965c61
+              expression: 'nodata(/MegaRAID controllers by Zabbix agent/megaraid.get,15m)=1'
+              name: 'MegaRAID: No StorCLI data for 15 minutes'
+              priority: AVERAGE
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: e3dca5922ac14a78a693459b84601b13
+          name: 'MegaRAID: Normalized data'
+          type: DEPENDENT
+          key: megaraid.normalized
+          delay: '0'
+          history: 1d
+          value_type: TEXT
+          trends: '0'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  value=value.replace(/^\uFEFF/,"");
+                  var s=JSON.parse(value),o={controllers:[],virtual_drives:[],physical_drives:[]};
+                  var A=s.Controllers||[];
+                   for(var i=0;i<A.length;i++){
+                   var c=A[i]||{},cmd=c["Command Status"]||{},r=c["Response Data"]||{};
+                   var b=r["Basics"]||{},v=r["Version"]||{},status=r["Status"]||{},hw=r["HwCfg"]||{};
+                   var id=b.Controller;if(id===undefined||id===null)id=cmd.Controller;id=Number(id);
+                    var st=String(status["Controller Status"]);
+                   var temp=Number(hw["ROC temperature(Degree Celsius)"]);if(isNaN(temp))temp=0;
+                    o.controllers.push({id:id,model:String(b.Model||""),serial:String(b["Serial Number"]||""),state:st,health:st==="Optimal"?0:1,temperature:temp});
+                    var V=r["VD LIST"]||[];for(var j=0;j<V.length;j++){var q=V[j]||{},d=String(q["DG/VD"]||"").split("/");if(d.length!==2)continue;var  z=String(q.State||"Unknown"),h=z==="Optl"?0:(z==="Dgrd"?1:(z==="Pdgd"?2:(z==="Offln"?3:4)));o.virtual_drives.push({controller:id,dg:Number(d[0]),vd:Number(d[1]),type:String(q.TYPE||""),size:String(q.Size||""),name:String(q.Name||""),state:z,health:h,access:String(q.Access||"Unknown"),consistency:String(q.Consist||"Unknown"),cache:String(q.Cache||"Unknown")});}
+                   var physicalDrives=r["PD LIST"]||[];
+                   for(var pdIndex=0;pdIndex<physicalDrives.length;pdIndex++){
+                     var physicalDrive=physicalDrives[pdIndex]||{};
+                    var eidSlot=String(physicalDrive["EID:Slt"]||"").split(":");
+                    if(eidSlot.length!==2)continue;
+                     var pdState=String(physicalDrive["State"]||"Unknown");
+                    var pdHealth=4;
+                    if(pdState==="Onln"||pdState==="DHS"||pdState==="GHS")pdHealth=0;
+                    else if(pdState==="Rbld")pdHealth=1;
+                    else if(pdState==="Offln"||pdState==="UBad"||pdState==="Msng"||pdState==="Failed")pdHealth=2;
+                    else if(pdState==="UGood"||pdState==="JBOD")pdHealth=3;
+                    o.physical_drives.push({controller:id,eid:Number(eidSlot[0]),slot:Number(eidSlot[1]),did:Number(physicalDrive["DID"]),model:String(physicalDrive["Model"]||"").replace(/^\s+|\s+$/g,""),interface:String(physicalDrive["Intf"]||""),media:String(physicalDrive["Med"]||""),size:String(physicalDrive["Size"]||""),dg:String(physicalDrive["DG"]),state:pdState,health:pdHealth});
+                   }
+                  }
+                   return JSON.stringify(o);
+          master_item:
+            key: megaraid.get
+          tags:
+            - tag: component
+              value: raw
+      discovery_rules:
+        - uuid: 412fd56f424d41d389f78f007ad82534
+          name: 'MegaRAID: Controller discovery'
+          type: DEPENDENT
+          key: megaraid.controller.discovery
+          delay: '0'
+          item_prototypes:
+            - uuid: 80d61612bb9b431f993c2c118bffa862
+              name: 'MegaRAID Controller {#CTRL}'
+              type: DEPENDENT
+              key: 'megaraid.controller.model[{#CTRL}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.controllers[?(@.id == {#CTRL})].model.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: 87ab2f6a274341bcbffb7797c14044d8
+              name: 'MegaRAID C{#CTRL}: BIOS version'
+              type: DEPENDENT
+              key: 'megaraid.controller.bios.version[{#CTRL}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      value=value.replace(/^\uFEFF/,"");
+                      var data=JSON.parse(value);
+                      var controllers=data["Controllers"]||[];
+                      for(var i=0;i<controllers.length;i++){
+                         var response=controllers[i]["Response Data"]||{};
+                        var basics=response["Basics"]||{};
+                        if(Number(basics["Controller"])===Number("{#CTRL}")){
+                          var version=response["Version"]||{};
+                          return version["Bios Version"];
+                        }
+                      }
+                      throw "Controller  {#CTRL} or field Bios Version not found";
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.get
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: e9ff5e59280e47118caf1a0de873506f
+              name: 'MegaRAID C{#CTRL}: Driver name'
+              type: DEPENDENT
+              key: 'megaraid.controller.driver.name[{#CTRL}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      value=value.replace(/^\uFEFF/,"");
+                      var data=JSON.parse(value);
+                      var controllers=data["Controllers"]||[];
+                      for(var i=0;i<controllers.length;i++){
+                         var response=controllers[i]["Response Data"]||{};
+                        var basics=response["Basics"]||{};
+                        if(Number(basics["Controller"])===Number("{#CTRL}")){
+                          var version=response["Version"]||{};
+                          return version["Driver Name"];
+                        }
+                      }
+                      throw "Controller  {#CTRL} or field Driver Name not found";
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.get
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: 0833173be3c744399f3653fdb6e89a6c
+              name: 'MegaRAID C{#CTRL}: Driver version'
+              type: DEPENDENT
+              key: 'megaraid.controller.driver.version[{#CTRL}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      value=value.replace(/^\uFEFF/,"");
+                      var data=JSON.parse(value);
+                      var controllers=data["Controllers"]||[];
+                      for(var i=0;i<controllers.length;i++){
+                         var response=controllers[i]["Response Data"]||{};
+                        var basics=response["Basics"]||{};
+                        if(Number(basics["Controller"])===Number("{#CTRL}")){
+                          var version=response["Version"]||{};
+                          return version["Driver Version"];
+                        }
+                      }
+                      throw "Controller {#CTRL} or field Driver Version not found";
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.get
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: cb4ffc4bbf9249d7912e7c15bd99ac81
+              name: 'MegaRAID C{#CTRL}: Firmware package build'
+              type: DEPENDENT
+              key: 'megaraid.controller.firmware.package[{#CTRL}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      value=value.replace(/^\uFEFF/,"");
+                      var data=JSON.parse(value);
+                      var controllers=data["Controllers"]||[];
+                      for(var i=0;i<controllers.length;i++){
+                         var response=controllers[i]["Response Data"]||{};
+                        var basics=response["Basics"]||{};
+                        if(Number(basics["Controller"])===Number("{#CTRL}")){
+                          var version=response["Version"]||{};
+                          return version["Firmware Package Build"];
+                        }
+                      }
+                       throw "Controller {#CTRL} or field Firmware Package Build not found";
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.get
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: 7de44df8a3d049fdae246a272b467554
+              name: 'MegaRAID C{#CTRL}: Firmware version'
+              type: DEPENDENT
+              key: 'megaraid.controller.firmware.version[{#CTRL}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      value=value.replace(/^\uFEFF/,"");
+                      var data=JSON.parse(value);
+                      var controllers=data["Controllers"]||[];
+                      for(var i=0;i<controllers.length;i++){
+                         var response=controllers[i]["Response Data"]||{};
+                        var basics=response["Basics"]||{};
+                        if(Number(basics["Controller"])===Number("{#CTRL}")){
+                          var version=response["Version"]||{};
+                          return version["Firmware Version"];
+                        }
+                      }
+                      throw "Controller {#CTRL} or field Firmware Version not found";
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.get
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: b8f76105430742679acd71368a34129f
+              name: 'MegaRAID C{#CTRL}: Controller status'
+              type: DEPENDENT
+              key: 'megaraid.controller.health[{#CTRL}]'
+              delay: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.controllers[?(@.id == {#CTRL})].health.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+              trigger_prototypes:
+                - uuid: 497bcfd64dfd4cc5b95a459841326e01
+                  expression: 'last(/MegaRAID controllers by Zabbix agent/megaraid.controller.health[{#CTRL}])<>0'
+                  name: 'MegaRAID C{#CTRL}: Controller is critical'
+                  priority: HIGH
+                  manual_close: 'YES'
+                  tags:
+                    - tag: scope
+                      value: availability
+            - uuid: ffd5e1bc16ce42288bd02e56d2f0e334
+              name: 'MegaRAID C{#CTRL}: Controller status text'
+              type: DEPENDENT
+              key: 'megaraid.controller.state[{#CTRL}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.controllers[?(@.id == {#CTRL})].state.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 6h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: b0281a298f59440ba00064373f03833a
+              name: 'MegaRAID C{#CTRL}: ROC temperature'
+              type: DEPENDENT
+              key: 'megaraid.controller.temperature[{#CTRL}]'
+              delay: '0'
+              value_type: FLOAT
+              units: °C
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.controllers[?(@.id == {#CTRL})].temperature.first()'
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+          master_item:
+            key: megaraid.normalized
+          lld_macro_paths:
+            - lld_macro: '{#CTRL}'
+              path: $.id
+            - lld_macro: '{#MODEL}'
+              path: $.model
+            - lld_macro: '{#SERIAL}'
+              path: $.serial
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.controllers
+        - uuid: 31f5697c3e2d4f52a04cf2cf437352ea
+          name: 'MegaRAID: Physical drive discovery'
+          type: DEPENDENT
+          key: megaraid.pd.discovery
+          delay: '0'
+          item_prototypes:
+            - uuid: ee52ac80e84140bcac1b976bd7f21494
+              name: 'MegaRAID C{#CTRL} E{#EID} S{#SLOT}: Drive group'
+              type: DEPENDENT
+              key: 'megaraid.pd.dg[{#CTRL},{#EID},{#SLOT}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.physical_drives[?(@.controller == {#CTRL} && @.eid == {#EID} && @.slot == {#SLOT})].dg.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: bc88b5d201dd497f973ad4dce825fe12
+              name: 'MegaRAID C{#CTRL} E{#EID} S{#SLOT}: Physical drive health'
+              type: DEPENDENT
+              key: 'megaraid.pd.health[{#CTRL},{#EID},{#SLOT}]'
+              delay: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.physical_drives[?(@.controller == {#CTRL} && @.eid == {#EID} && @.slot == {#SLOT})].health.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+              trigger_prototypes:
+                - uuid: c5c336224d6848a3ade5266aaac83af3
+                  expression: 'last(/MegaRAID controllers by Zabbix agent/megaraid.pd.health[{#CTRL},{#EID},{#SLOT}])=2'
+                  name: 'MegaRAID C{#CTRL} E{#EID} S{#SLOT}: Physical drive failed'
+                  priority: HIGH
+                  manual_close: 'YES'
+                  tags:
+                    - tag: scope
+                      value: availability
+                - uuid: 32f809f05b854328b721ed90a70c4195
+                  expression: 'last(/MegaRAID controllers by Zabbix agent/megaraid.pd.health[{#CTRL},{#EID},{#SLOT}])=4'
+                  name: 'MegaRAID C{#CTRL} E{#EID} S{#SLOT}: Physical drive state is unknown'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+                  tags:
+                    - tag: scope
+                      value: availability
+            - uuid: a9060614163e4283948dd81c1d168471
+              name: 'MegaRAID C{#CTRL} E{#EID} S{#SLOT}: Interface'
+              type: DEPENDENT
+              key: 'megaraid.pd.interface[{#CTRL},{#EID},{#SLOT}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.physical_drives[?(@.controller == {#CTRL} && @.eid == {#EID} && @.slot == {#SLOT})].interface.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: 0be6844181824b61866d2bb91e6356b6
+              name: 'MegaRAID C{#CTRL} E{#EID} S{#SLOT}: Model'
+              type: DEPENDENT
+              key: 'megaraid.pd.model[{#CTRL},{#EID},{#SLOT}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.physical_drives[?(@.controller == {#CTRL} && @.eid == {#EID} && @.slot == {#SLOT})].model.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: b07f3ba50519461e8a8aa2d4336d2506
+              name: 'MegaRAID C{#CTRL} E{#EID} S{#SLOT}: Size'
+              type: DEPENDENT
+              key: 'megaraid.pd.size[{#CTRL},{#EID},{#SLOT}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.physical_drives[?(@.controller == {#CTRL} && @.eid == {#EID} && @.slot == {#SLOT})].size.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1d
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: 8d4b662b977441dba52a3cc7fae1ca0a
+              name: 'MegaRAID C{#CTRL} E{#EID} S{#SLOT}: Physical drive state'
+              type: DEPENDENT
+              key: 'megaraid.pd.state[{#CTRL},{#EID},{#SLOT}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.physical_drives[?(@.controller == {#CTRL} && @.eid == {#EID} && @.slot == {#SLOT})].state.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 6h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+          master_item:
+            key: megaraid.normalized
+          lld_macro_paths:
+            - lld_macro: '{#CTRL}'
+              path: $.controller
+            - lld_macro: '{#DID}'
+              path: $.did
+            - lld_macro: '{#EID}'
+              path: $.eid
+            - lld_macro: '{#INTERFACE}'
+              path: $.interface
+            - lld_macro: '{#MEDIA}'
+              path: $.media
+            - lld_macro: '{#MODEL}'
+              path: $.model
+            - lld_macro: '{#SIZE}'
+              path: $.size
+            - lld_macro: '{#SLOT}'
+              path: $.slot
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.physical_drives
+        - uuid: c68521dd68944d74b526804f04fa456c
+          name: 'MegaRAID: Virtual drive discovery'
+          type: DEPENDENT
+          key: megaraid.vd.discovery
+          delay: '0'
+          item_prototypes:
+            - uuid: 67d2cba4e01f429ea70fb9f813822a49
+              name: 'MegaRAID C{#CTRL} DG{#DG}/VD{#VD}: Access'
+              type: DEPENDENT
+              key: 'megaraid.vd.access[{#CTRL},{#DG},{#VD}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.virtual_drives[?(@.controller == {#CTRL} && @.dg == {#DG} && @.vd == {#VD})].access.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 6h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: b0c944a28be7410a969072797884c71b
+              name: 'MegaRAID C{#CTRL} DG{#DG}/VD{#VD}: Cache policy'
+              type: DEPENDENT
+              key: 'megaraid.vd.cache[{#CTRL},{#DG},{#VD}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.virtual_drives[?(@.controller == {#CTRL} && @.dg == {#DG} && @.vd == {#VD})].cache.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 6h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: bcf949e3c36c40c58e1fbf0cb68fa52c
+              name: 'MegaRAID C{#CTRL} DG{#DG}/VD{#VD}: Consistency'
+              type: DEPENDENT
+              key: 'megaraid.vd.consistency[{#CTRL},{#DG},{#VD}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.virtual_drives[?(@.controller == {#CTRL} && @.dg == {#DG} && @.vd == {#VD})].consistency.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 6h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+            - uuid: 24ad77de339b4bf4a2df0b77ec5c1aee
+              name: 'MegaRAID C{#CTRL} DG{#DG}/VD{#VD}: RAID health'
+              type: DEPENDENT
+              key: 'megaraid.vd.health[{#CTRL},{#DG},{#VD}]'
+              delay: '0'
+              valuemap:
+                name: 'MegaRAID Virtual Drive States'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.virtual_drives[?(@.controller == {#CTRL} && @.dg == {#DG} && @.vd == {#VD})].health.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+              trigger_prototypes:
+                - uuid: bb49723e70b84707b556beee9896840b
+                  expression: 'last(/MegaRAID controllers by Zabbix agent/megaraid.vd.health[{#CTRL},{#DG},{#VD}])=1 or last(/MegaRAID controllers by Zabbix agent/megaraid.vd.health[{#CTRL},{#DG},{#VD}])=2'
+                  name: 'MegaRAID C{#CTRL} DG{#DG}/VD{#VD}: RAID is degraded'
+                  priority: HIGH
+                  manual_close: 'YES'
+                  tags:
+                    - tag: scope
+                      value: availability
+                - uuid: aba2808db1cc486890a17d649bfe38b7
+                  expression: 'last(/MegaRAID controllers by Zabbix agent/megaraid.vd.health[{#CTRL},{#DG},{#VD}])=3'
+                  name: 'MegaRAID C{#CTRL} DG{#DG}/VD{#VD}: RAID is offline'
+                  priority: DISASTER
+                  manual_close: 'YES'
+                  tags:
+                    - tag: scope
+                      value: availability
+                - uuid: 2ca8bcec98c7420abad7f4d4daf9ccf6
+                  expression: 'last(/MegaRAID controllers by Zabbix agent/megaraid.vd.health[{#CTRL},{#DG},{#VD}])=4'
+                  name: 'MegaRAID C{#CTRL} DG{#DG}/VD{#VD}: RAID status is unknown'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+                  tags:
+                    - tag: scope
+                      value: availability
+            - uuid: 69b9cce6a03b4d829aa03869f4fbd0bd
+              name: 'MegaRAID C{#CTRL} DG{#DG}/VD{#VD}: RAID state'
+              type: DEPENDENT
+              key: 'megaraid.vd.state[{#CTRL},{#DG},{#VD}]'
+              delay: '0'
+              value_type: CHAR
+              trends: '0'
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - '$.virtual_drives[?(@.controller == {#CTRL} && @.dg == {#DG} && @.vd == {#VD})].state.first()'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 6h
+              master_item:
+                key: megaraid.normalized
+              tags:
+                - tag: component
+                  value: megaraid
+          master_item:
+            key: megaraid.normalized
+          lld_macro_paths:
+            - lld_macro: '{#CTRL}'
+              path: $.controller
+            - lld_macro: '{#DG}'
+              path: $.dg
+            - lld_macro: '{#SIZE}'
+              path: $.size
+            - lld_macro: '{#TYPE}'
+              path: $.type
+            - lld_macro: '{#VDNAME}'
+              path: $.name
+            - lld_macro: '{#VD}'
+              path: $.vd
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.virtual_drives
+      tags:
+        - tag: class
+          value: hardware
+        - tag: target
+          value: windows
+      valuemaps:
+        - uuid: 0b0cb608d10c45068a636cfb17b7cd99
+          name: 'MegaRAID Virtual Drive States'
+          mappings:
+            - value: '0'
+              newvalue: Optimal
+            - value: '1'
+              newvalue: Degraded
+            - value: '2'
+              newvalue: 'Partially degraded'
+            - value: '3'
+              newvalue: Offline
+            - value: '4'
+              newvalue: Unknown
